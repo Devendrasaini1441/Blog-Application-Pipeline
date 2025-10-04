@@ -1,0 +1,61 @@
+name: Terraform Plan (PR)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  terraform-plan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set TF_WORKSPACE
+        run: echo "TF_WORKSPACE=${{ github.event.pull_request.base.ref }}" >> $GITHUB_ENV
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: "1.5.7"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Terraform Init
+        run: |
+          terraform -chdir=infra init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="region=${{ secrets.AWS_REGION }}" \
+            -backend-config="key=${{ secrets.TF_STATE_KEY_PREFIX }}/terraform/${TF_WORKSPACE}/terraform.tfstate" \
+            -backend-config="dynamodb_table=${{ secrets.TF_STATE_DDB_TABLE }}"
+
+      - name: Terraform Format & Validate
+        run: |
+          terraform -chdir=infra fmt -check
+          terraform -chdir=infra validate
+
+      - name: Select/Create Workspace
+        run: |
+          cd infra
+          terraform workspace select ${TF_WORKSPACE} || terraform workspace new ${TF_WORKSPACE}
+
+      - name: Terraform Plan
+        id: plan
+        run: |
+          cd infra
+          terraform plan -input=false -var="environment=${TF_WORKSPACE}" -var="ssh_public_key=${{ secrets.SSH_PUBLIC_KEY }}" -out=tfplan
+
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan-${{ github.event.pull_request.number }}
+          path: infra/tfplan
